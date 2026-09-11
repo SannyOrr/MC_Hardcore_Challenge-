@@ -36,6 +36,13 @@ YELLOW = "\033[33m"
 BLUE = "\033[34m"
 RESET = "\033[0m"
 
+allowed_death_entities = [
+    "Named entity class",
+    "entity class",
+    "class_1646",
+    "*"
+]
+
 death_messages = [
     "died",
     "drowned",
@@ -96,6 +103,22 @@ death_messages = [
     "starved"
 ]
 
+
+advancements = {
+    "Stone Age": 1,
+    "Acquire Hardware": 2,
+    "Hot Stuff": 3,
+    "Diamonds!": 4,
+    "Ice Bucket Challenge": 5,
+    "We Need to Go Deeper": 6,
+    "Nether": 7,
+    "A Terrible Fortress": 8,
+    "Eye Spy": 9,
+    "The End?": 10,
+    "Or the beginning?": 11,
+    "Free the End": 12,
+}
+
 # BANNER
 
 def create_banner():
@@ -119,12 +142,14 @@ def load_stats():
     if not STATS_FILE.exists():
         return {
             "total_attempts": 0,
-            "deaths": 0,
-            "longest_game": 0,
+            "attempts": {},
+            "longest_run": 0,
+            "total_run_time": 0,
             "furthest_progress": 0,
-            "total_time": 0,
-            "death types": {},
-            "attempts": []
+            "current_run": {},
+            "deaths": {},
+            "players": {}
+            
         }
 
     with open(STATS_FILE, "r") as file:
@@ -169,7 +194,6 @@ def check_eula_agreement():
             for line in file:
                 if line.strip() == "eula=true":
                     eula = True
-        eula = False
     except FileNotFoundError:
         eula = False
 
@@ -217,51 +241,37 @@ track attempts
 
 def monitor_server(process, stats):
     current_players = []
-    last_time_check = time.time()\
+    progress = stats["current_run"].get("progress", 0)
+    server_started = False
 
     for line in process.stdout:
         print(line, end="")
 
         # Check server has started
-        if "Done" in line:
+        if "Done" in line and not server_started:
             process.stdin.write("scoreboard objectives add timesDied dummy\n")
             process.stdin.write("scoreboard objectives setdisplay list timesDied\n")
             process.stdin.flush()
-
-        # Check Minecraft day every 10 seconds
-
-        if time.time() - last_time_check >= 10:
-            get_day(process)
-            last_time_check = time.time()
-
-        # Check time
-        match = re.search(r"Timeline minecraft:day is at (\d+)", line)
-
-        if match:
-            print("GETTING TIME")
-            day = int(match.group(1))
-            stats["total_time"] += day
-            if day > stats["longest_game"]:
-                stats["longest_game"] = day
-            for user in current_players:
-                if stats["players"][user]["longest_game"] < day:
-                    stats["players"][user]["longest_game"] = day
-            save_stats(stats)
+            server_started = True
 
         # Handle new players joining
         match = re.search(r"(\w+) joined the game", line)
 
         if match:
             player = match.group(1)
-            print(f"{player} has joined the game")
+           
             if player not in stats["players"]:
                 print_mc(process, f"Welcome {player} may the mines be the in your favour")
                 stats["players"][player] = new_player()
                 save_stats(stats)
+            if player not in stats["current_run"]["players"]:
+                stats["current_run"]["players"].append(player)
+                save_stats(stats)
+                print_mc(process, f"{player} has joined the current run")
 
             current_players.append(player)
 
-            process.stdin.write(f"scoreboard players set {player} timesDied {stats['players'][player]['deaths']}\n")
+            process.stdin.write(f"scoreboard players set {player} timesDied {stats['players'][player]['deaths_total']}\n")
             process.stdin.flush()
             print_player_stats(process, player, stats)
 
@@ -289,20 +299,89 @@ def monitor_server(process, stats):
 
             handle_command(player, command, process, stats)
 
+        # Handle Advancment
+        match = re.match(r"(.+) has made the advancement \[(.+)\]", line)
+
+        if match:
+            player = match.group(1)
+            advancement = match.group(2)
+
+            if advancement in advancements:
+                lvl = advancements[advancement]
+                if progress < lvl:
+                    progress = lvl
+                    stats["current_run"]["progress"] = progress
+                    print(f"{player} reached progress {progress}")
+                    save_stats(stats)
+
+
         # Handle Death
+        """
+        Update all stats
+        get death type then
+        Update the deaths and add a death to the player that died
+        get final run time and final run progress and update run / players and overall time stat
+        Check if this is the longest run and update if so on player / overall
+        Check if furthest progress and update if so on player / overall
+        update the attempts for all players on this run
+
+        save the current run in attempts
+        clear the current run
+        """
+
         if any(death_message in line for death_message in death_messages):
             user = next((player for player in current_players if player in line), None)
-            print_mc(process, f"Uh oh {user} is dead, bye bye world, bye bye diamonds, hello void, I think you're gonna die")
+            death_message = next((death_message for death_message in death_messages if death_message in line), None)
 
-            get_day(process)
-            player_died(user, stats)
+            if not any(f"<{username}>" in line for username in current_players) and not "[Server]" in line and not any(death_entities in line for death_entities in allowed_death_entities):
 
-            time.sleep(5)  # Wait for a few seconds before resetting the world
-            return "DEATH", stats
+                # Warn server of death
+                print_mc(process, f"Uh oh {user} is dead,\n bye bye world,\nbye bye diamonds, \nhello void, \nI think you're gonna die")
 
+                #Handle deaths]
+                stats["deaths"][death_message] = stats["deaths"].get(death_message, 0) + 1
 
+                # Handle day
+                day = get_day(process)
 
+                # Handle progress
+                progress = stats["current_run"].get("progress", 0)
+                if stats["furthest_progress"] < progress:
+                    print(f"New furthest progress: {progress}")
+                    stats["furthest_progress"] = progress
+
+                # current run
+                current_run = stats["current_run"]
+
+                current_run["length"] = day
+                current_run["progress"] = progress
+                current_run["death_type"] = death_message
+                current_run["who_died"] = user
+
+                stats["current_run"] = current_run
+
+                # Handle death
+                stats = player_died(user, stats, ticks=day, progress=progress, death_type=death_message, attempt=stats["current_run"])
+
+                #clear current run
+                stats["current_run"] = {}
+
+                save_stats(stats)
+                
+                print_mc(process, f"The world will be deleted now, sorry")
+                time.sleep(1)  
+                print_mc(process, f"3")
+                time.sleep(1)  
+                print_mc(process, f"2")
+                time.sleep(1) 
+                print_mc(process, f"1")
+                time.sleep(1) 
+                print_mc(process, f"Goodbye world")
+                time.sleep(1) 
+
+                return "DEATH", stats
     return None, stats
+
 
 def handle_command(player, command, server, stats):
     if command == "stats":
@@ -321,6 +400,14 @@ def get_day(server):
     server.stdin.write("time query day\n")
     server.stdin.flush()
 
+    while True:
+        line = server.stdout.readline()
+
+        match = re.search(r"Timeline minecraft:day is at (\d+)", line)
+
+        if match:
+            return int(match.group(1))
+
     
 def print_mc(server, msg):
     server.stdin.write(f"say {msg}\n")
@@ -329,50 +416,94 @@ def print_mc(server, msg):
 def new_player():
     return {
         "total_attempts": 0,
-        "deaths": 0,
-        "longest_game": 0,
-        "furthest_progress": 0,
-        "total_time": 0,
-        "death types": {},
+        "attempts": {},
+        "deaths_total": 0,
+        "deaths": {},
+        "longest_run": 0,
+        "total_run_time": 0,
+        "furthest_progress": 0
+    }
+
+def new_attempt(num):
+    return {
+        "attempt_number": num,
+        "length": 0,
+        "progress": 0,
+        "death_type": "",
+        "who_died": "",
+        "players": []
     }
 
 def print_player_stats(server, player, stats):
     print_mc(server, f"Stats for {player}:")
     print_mc(server, f"Total Attempts: {stats['players'][player]['total_attempts']}")
-    print_mc(server, f"Deaths: {stats['players'][player]['deaths']}")
-    print_mc(server, f"Longest Game: {stats['players'][player]['longest_game']}")
+    print_mc(server, f"Deaths: {stats['players'][player]['deaths_total']}")
+    print_mc(server, f"Longest Game: {ticks_to_real_time(stats['players'][player]['longest_run'])}")
     print_mc(server, f"Furthest Progress: {stats['players'][player]['furthest_progress']}")
-    print_mc(server, f"Total Time: {stats['players'][player]['total_time']}")
-    print_mc(server, "Death Types:")
-    for death_type, count in stats['players'][player]['death types'].items():
-        print_mc(server, f"  {death_type}: {count}")
+    print_mc(server, f"Total Time: {stats['players'][player]['total_run_time']}")
+    #print_mc(server, "Death Types:")
+    #for death_type, count in stats['players'][player]['deaths'].items():
+    #    print_mc(server, f"  {death_type}: {count}")
 
-def new_attmpt():
-    return {
-        "attempt_number": 0,
-    }
 
-def player_died(player, stats):
-    print(f"{player} died")
-    stats["players"][player]["deaths"] += 1
 
-    save_stats(stats)
+def player_died(player, stats, ticks=0, progress=0, death_type="", attempt=None):
+    # Overall  
+    stats["total_attempts"] += 1
 
+    stats["attempts"][stats["total_attempts"]] = attempt
+
+    #time
+    stats["total_run_time"] += ticks
+
+    if ticks > stats["longest_run"]:
+        print(f"New longest run: {ticks_to_real_time(ticks)} ticks")
+        stats["longest_run"] = ticks
+
+    if progress > stats["furthest_progress"]:
+        print(f"New furthest progress: {progress}")
+        stats["furthest_progress"] = progress
+
+    for p in stats["current_run"]["players"]:
+        stats["players"][p]["total_attempts"] += 1
+        stats["players"][p]["attempts"][stats["total_attempts"]] = attempt
+
+        stats["players"][p]["total_run_time"] += ticks
+
+        if ticks > stats["players"][p]["longest_run"]:
+            print(f"New longest game for {p}: {ticks_to_real_time(ticks)}")
+            stats["players"][p]["longest_run"] = ticks
+
+        if stats["players"][p]["furthest_progress"] < progress:
+            print(f"New furthest progress for {p}: {progress}")
+            stats["players"][p]["furthest_progress"] = progress
+
+        if player == p:
+            stats["players"][p]["deaths_total"] += 1
+        stats["players"][p]["deaths"][death_type] = (
+            stats["players"][p]["deaths"].get(death_type, 0) + 1
+        )
+    return stats
+        
+
+def ticks_to_real_time(ticks: int) -> str:
+    """Converts Minecraft game ticks into real-world human time duration (HH:MM:SS)."""
+    # Minecraft runs at 20 ticks per second
+    total_seconds = ticks // 20
+    
+    # Calculate hours, minutes, and seconds
+    hours = total_seconds // 3600
+    minutes = (total_seconds % 3600) // 60
+    seconds = total_seconds % 60
+    
+    # Return formatted string with zero-padding (e.g., 01:23:45)
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+
+# GAME FUNCTIONS
 def reset_world():
     if WORLD_DIR.exists():
         shutil.rmtree(WORLD_DIR)
         print("World deleted.")
-
-
-# GAME FUNCTIONS
-def handle_death(stats):
-    print("Someone Died")
-    stats["deaths"] += 1
-    stats["total_attempts"] += 1
-
-    time.sleep(5)  # Wait for a few seconds before resetting the world
-
-    reset_world()
 
 
 # MAIN LOOP
@@ -389,9 +520,14 @@ def main():
     create_banner()
 
     while True:
-        server = start_server()
         check_eula_agreement()
         enable_hardcore_mode()
+
+        server = start_server()
+
+        if stats["current_run"] == {}:
+            stats["current_run"] = new_attempt(stats["total_attempts"] + 1)
+            save_stats(stats)
 
         try:
             event, stats = monitor_server(server, stats)
@@ -407,7 +543,7 @@ def main():
         stop_server(server)
 
         if event == "DEATH":
-            handle_death(stats)
+            reset_world()
 
         save_stats(stats)
  
