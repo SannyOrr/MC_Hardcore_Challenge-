@@ -1,0 +1,19 @@
+{
+    "total_attempts": 469,
+    "deaths": 469,
+    "longest_game": 7954,
+    "furthest_progress": 0,
+    "total_time": 120484,
+    "players": {
+        "Sokiwi": {
+            "total_attempts": 0,
+            "deaths": 472,
+            "longest_game": 7954,
+            "furthest_progress": 0,
+            "total_time": 0,
+            "death types": {}
+        }
+    },
+    "death types": {},
+    "attempts": []
+}
